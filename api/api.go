@@ -65,6 +65,14 @@ type Rdns struct {
 	Ptr string // (String)	 PTR record
 }
 
+type Failover struct {
+	Ip               IP     // (String)	IP address
+	Netmask          string // (String) Failover netmask
+	Server_ip        IP     // (String)	Server main IP address
+	Server_number    int    // (Integer) Server id
+	Active_server_ip IP     // (String)	Main IP of current destination server
+}
+
 type RequestError struct {
 	httpReq    string
 	httpMethod string

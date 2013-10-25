@@ -26,6 +26,7 @@ const (
 	KindManagement
 	KindNetwork
 	KindVirtual
+	KindFailover
 )
 
 type Kind byte
@@ -42,6 +43,8 @@ func (k Kind) String() string {
 		return "Virtual"
 	case KindNetwork:
 		return "Network"
+	case KindFailover:
+		return "Failover"
 	default:
 		return "kind_" + strconv.Itoa(int(k))
 	}
@@ -75,6 +78,8 @@ type Node struct {
 	Traffic_daily    int    // (Integer) Daily traffic limit in MB
 	Traffic_hourly   int    // (Integer) Hourly traffic limit in MB
 	Traffic_monthly  int    // (Integer) Monthly traffic limit in GB
+	// Failover
+	Active_server_ip net.IP // (String)	Main IP of current destination server
 	// Misc
 	Kind Kind
 }
@@ -103,6 +108,7 @@ func (n *Node) Clone() *Node {
 		Traffic_hourly:   n.Traffic_hourly,
 		Traffic_monthly:  n.Traffic_monthly,
 		Traffic_warnings: n.Traffic_warnings,
+		Active_server_ip: n.Active_server_ip,
 		Kind:             n.Kind,
 	}
 }
@@ -132,14 +138,15 @@ func getHetznerData(username, password string) (Nodes, error) {
 
 	// load raw data
 	var (
-		rservers []api.Server
-		rips     []api.Ip
-		rsubnets []api.Subnet
-		rrdns    []api.Rdns
-		wg       sync.WaitGroup
+		rservers  []api.Server
+		rips      []api.Ip
+		rsubnets  []api.Subnet
+		rrdns     []api.Rdns
+		rfailover []api.Failover
+		wg        sync.WaitGroup
 	)
-	errc := make(chan error, 4)
-	wg.Add(4)
+	errc := make(chan error, 5)
+	wg.Add(5)
 	go func() {
 		defer wg.Done()
 		errc <- api.Get("/server", &rservers)
@@ -155,6 +162,10 @@ func getHetznerData(username, password string) (Nodes, error) {
 	go func() {
 		defer wg.Done()
 		errc <- api.Get("/rdns", &rrdns)
+	}()
+	go func() {
+		defer wg.Done()
+		errc <- api.Get("/failover", &rfailover)
 	}()
 	wg.Wait()
 	for i := 0; i < cap(errc); i++ {
@@ -261,6 +272,16 @@ BindPtr:
 		panic(fmt.Sprintf("should not reach that point: loosen record %s PTR %s", ip, ptr))
 	}
 
+	for _, e := range rfailover {
+		// failover is a /32 network assigned to server
+		n, found := nodes[e.Ip.String()]
+		if !found || !(n.Kind == KindNetwork && n.Failover == true) {
+			panic("no subnet for failover " + e.Ip.String())
+		}
+		n.Kind = KindFailover
+		n.Active_server_ip = net.IP(e.Active_server_ip)
+	}
+
 	// convert map to list sorted by server_number+kind
 	l := Nodes{}
 	for _, n := range nodes {
@@ -309,14 +330,15 @@ var (
 		"traffic_daily":    field{"%d", func(n *Node) interface{} { return n.Traffic_daily }},
 		"traffic_hourly":   field{"%d", func(n *Node) interface{} { return n.Traffic_hourly }},
 		"traffic_monthly":  field{"%d", func(n *Node) interface{} { return n.Traffic_monthly }},
+		"active_server_ip": field{"%s", func(n *Node) interface{} { return n.Active_server_ip }},
 	}
 )
 
 func main() {
 	flag.BoolVar(&batchMode, "batch", false, "output mode handy for batch processing")
 	flag.StringVar(&delimiter, "delimiter", ",", "field delimiter for batch mode output")
-	flag.StringVar(&ofields, "fields", "server_number,kind,ip,subnet,gateway,server_name,ptr,server_ip,separate_mac,dc,product,status,cancelled,locked,paid_until,failover,flatrate,throttled,traffic_warnings,traffic,traffic_daily,traffic_hourly,traffic_monthly", "comma separated list of output fields")
-	flag.StringVar(&okinds, "kinds", "host,management,network,virtual", "comma separated list of output kinds")
+	flag.StringVar(&ofields, "fields", "server_number,kind,ip,subnet,gateway,server_name,ptr,server_ip,separate_mac,dc,product,status,cancelled,locked,paid_until,failover,flatrate,throttled,traffic_warnings,traffic,traffic_daily,traffic_hourly,traffic_monthly,active_server_ip", "comma separated list of output fields")
+	flag.StringVar(&okinds, "kinds", "host,management,network,virtual,failover", "comma separated list of output kinds")
 	flag.Parse()
 
 	log.SetFlags(0)
@@ -330,7 +352,7 @@ func main() {
 	format := func(a []string) string {
 		l := make([]string, 0, len(names))
 		for _, name := range names {
-			f, found := knownFields[strings.ToLower(name)]
+			f, found := knownFields[strings.ToLower(strings.TrimSpace(name))]
 			if !found {
 				log.Fatalf("unknown field %s", name)
 			}
@@ -342,13 +364,13 @@ func main() {
 		l := make([]interface{}, 0, len(names))
 		for _, name := range names {
 			// all names are known on this line
-			l = append(l, knownFields[strings.ToLower(name)].factory(n))
+			l = append(l, knownFields[strings.ToLower(strings.TrimSpace(name))].factory(n))
 		}
 		return l
 	}
 	kinds := make(map[Kind]bool)
 	for _, k := range strings.Split(okinds, ",") {
-		switch strings.ToLower(k) {
+		switch strings.ToLower(strings.TrimSpace(k)) {
 		case "host":
 			kinds[KindHost] = true
 		case "management":
@@ -357,6 +379,8 @@ func main() {
 			kinds[KindNetwork] = true
 		case "virtual":
 			kinds[KindVirtual] = true
+		case "failover":
+			kinds[KindFailover] = true
 		}
 	}
 
