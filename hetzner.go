@@ -233,7 +233,7 @@ func getHetznerData(username, password string) (Nodes, error) {
 		if v := n.Ip.To4(); v == nil {
 			bits = 8 * net.IPv6len
 		}
-		n.Subnet = &net.IPNet{n.Ip, net.CIDRMask(e.Mask, bits)}
+		n.Subnet = &net.IPNet{IP: n.Ip, Mask: net.CIDRMask(e.Mask, bits)}
 
 		nodes[n.Ip.String()] = n
 		subnets = append(subnets, n)
@@ -258,7 +258,7 @@ BindPtr:
 				continue BindPtr
 			}
 		}
-		panic(fmt.Sprintf("should not reach that point: unknown revers dns %s PTR %s", ip, ptr))
+		panic(fmt.Sprintf("should not reach that point: loosen record %s PTR %s", ip, ptr))
 	}
 
 	// convert map to list sorted by server_number+kind
