@@ -93,9 +93,10 @@ type Client struct {
 func (c *Client) Get(method string, v interface{}) error {
 	// check value type before any transfer
 	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() || rv.Elem().Kind() != reflect.Slice {
-		panic("v must be pointer to slice")
+	if rv.IsNil() {
+		panic("v is nil")
 	}
+	sliceWanted := rv.Kind() == reflect.Ptr && rv.Elem().Kind() == reflect.Slice
 
 	// do request
 	req, _ := http.NewRequest("GET", c.baseUrl+method, nil)
@@ -108,27 +109,41 @@ func (c *Client) Get(method string, v interface{}) error {
 	}
 
 	// get type of v' element
-	vtyp := rv.Elem().Type().Elem()
+	var vtyp reflect.Type
+	if sliceWanted {
+		vtyp = rv.Elem().Type().Elem()
+	} else {
+		vtyp = rv.Elem().Type()
+	}
 	// construct slice of v' objects wrapped in map, as hetzner api returns json object like [{server:{/*fields*/}}]
 	key := reflect.ValueOf(strings.ToLower(vtyp.Name()))
-	ptr := reflect.New(reflect.SliceOf(reflect.MapOf(key.Type(), vtyp)))
+	var ptr reflect.Value
+	if sliceWanted {
+		ptr = reflect.New(reflect.SliceOf(reflect.MapOf(key.Type(), vtyp)))
+	} else {
+		ptr = reflect.New(reflect.MapOf(key.Type(), vtyp))
+	}
 	// decode json
 	dec := json.NewDecoder(res.Body)
 	if err := dec.Decode(ptr.Interface()); err != nil {
 		return &RequestError{"GET", method, res.Status, err}
 	}
 
-	// construct the new slice of unwrapped v' objects [{/*fields*/}]
-	uSlice := reflect.MakeSlice(reflect.SliceOf(vtyp), 0, ptr.Elem().Len())
+	if sliceWanted {
+		// construct the new slice of unwrapped v' objects [{/*fields*/}]
+		uSlice := reflect.MakeSlice(reflect.SliceOf(vtyp), 0, ptr.Elem().Len())
 
-	// fill new slice with unwrapped v' objects
-	wSlice := ptr.Elem()
-	for i := 0; i < wSlice.Len(); i++ {
-		uSlice = reflect.Append(uSlice, wSlice.Index(i).MapIndex(key))
+		// fill new slice with unwrapped v' objects
+		wSlice := ptr.Elem()
+		for i := 0; i < wSlice.Len(); i++ {
+			uSlice = reflect.Append(uSlice, wSlice.Index(i).MapIndex(key))
+		}
+
+		// make v point to slice with unwrapped values
+		rv.Elem().Set(uSlice)
+	} else {
+		rv.Elem().Set(ptr.Elem().MapIndex(key))
 	}
-
-	// make v point to slice with unwrapped values
-	rv.Elem().Set(uSlice)
 
 	return nil
 }
