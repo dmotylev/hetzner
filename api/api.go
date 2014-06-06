@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 )
@@ -90,23 +91,13 @@ type Client struct {
 	login, password string
 }
 
-func (c *Client) Get(method string, v interface{}) error {
+func decodeResponse(res *http.Response, v interface{}) error {
 	// check value type before any transfer
 	rv := reflect.ValueOf(v)
 	if rv.IsNil() {
 		panic("v is nil")
 	}
 	sliceWanted := rv.Kind() == reflect.Ptr && rv.Elem().Kind() == reflect.Slice
-
-	// do request
-	req, _ := http.NewRequest("GET", c.baseUrl+method, nil)
-	req.SetBasicAuth(c.login, c.password)
-
-	res, err := c.http.Do(req)
-	defer res.Body.Close()
-	if err != nil || res.StatusCode != http.StatusOK {
-		return &RequestError{"GET", method, res.Status, err}
-	}
 
 	// get type of v' element
 	var vtyp reflect.Type
@@ -126,7 +117,7 @@ func (c *Client) Get(method string, v interface{}) error {
 	// decode json
 	dec := json.NewDecoder(res.Body)
 	if err := dec.Decode(ptr.Interface()); err != nil {
-		return &RequestError{"GET", method, res.Status, err}
+		return err
 	}
 
 	if sliceWanted {
@@ -148,6 +139,39 @@ func (c *Client) Get(method string, v interface{}) error {
 	return nil
 }
 
+func (c *Client) Get(method string, v interface{}) error {
+	// do request
+	req, _ := http.NewRequest("GET", c.baseUrl+method, nil)
+	req.SetBasicAuth(c.login, c.password)
+
+	res, err := c.http.Do(req)
+	defer res.Body.Close()
+	if err != nil || res.StatusCode != http.StatusOK {
+		return &RequestError{"GET", method, res.Status, err}
+	}
+	if err = decodeResponse(res, v); err != nil {
+		return &RequestError{"GET", method, res.Status, err}
+	}
+	return err
+}
+
+func (c *Client) Post(method string, params url.Values, v interface{}) error {
+	// do request
+	req, _ := http.NewRequest("POST", c.baseUrl+method, strings.NewReader(params.Encode()))
+	req.SetBasicAuth(c.login, c.password)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	res, err := c.http.Do(req)
+	defer res.Body.Close()
+	if err != nil || res.StatusCode != http.StatusOK {
+		return &RequestError{"GET", method, res.Status, err}
+	}
+	if err = decodeResponse(res, v); err != nil {
+		return &RequestError{"GET", method, res.Status, err}
+	}
+	return err
+}
+
 var DefaultClient = &Client{http.DefaultClient, "https://robot-ws.your-server.de", "", ""}
 
 func SetBasicAuth(username, password string) {
@@ -156,4 +180,8 @@ func SetBasicAuth(username, password string) {
 
 func Get(method string, v interface{}) error {
 	return DefaultClient.Get(method, v)
+}
+
+func Post(method string, params url.Values, v interface{}) error {
+	return DefaultClient.Post(method, params, v)
 }
