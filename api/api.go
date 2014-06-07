@@ -74,15 +74,25 @@ type Failover struct {
 	Active_server_ip IP     // (String)	Main IP of current destination server
 }
 
-type RequestError struct {
-	httpReq    string
-	httpMethod string
-	httpStatus string
-	rootCause  error
+type Error struct {
+	Status  int    // (Integer) HTTP Status Code
+	Code    string // (String) Specific error code
+	Message string // (String) Specific error message
 }
 
-func (e *RequestError) Error() string {
-	return fmt.Sprintf("hetzner: %s %s failed (cause: %v) got '%s'", e.httpReq, e.httpMethod, e.rootCause, e.httpStatus)
+func (e Error) Error() string {
+	return fmt.Sprintf("%s (%d %s)", e.Message, e.Status, e.Code)
+}
+
+type RequestError struct {
+	HttpReq        string
+	HttpMethod     string
+	HttpStatusCode int
+	RootCause      error
+}
+
+func (e RequestError) Error() string {
+	return fmt.Sprintf("hetzner: %s %s got '%d %s' (cause: %v)", e.HttpReq, e.HttpMethod, e.HttpStatusCode, http.StatusText(e.HttpStatusCode), e.RootCause)
 }
 
 type Client struct {
@@ -139,20 +149,34 @@ func decodeResponse(res *http.Response, v interface{}) error {
 	return nil
 }
 
+func (c *Client) do(req *http.Request, v interface{}) error {
+	res, err := c.http.Do(req)
+	defer res.Body.Close()
+	newRequestError := func(cause error) error { return &RequestError{req.Method, req.URL.Path, res.StatusCode, cause} }
+	if err != nil {
+		return newRequestError(err)
+	}
+	if res.StatusCode != http.StatusOK {
+		// decode hetzner error from response body
+		var cause Error
+		if err = decodeResponse(res, &cause); err == nil {
+			err = cause
+		}
+		return newRequestError(err)
+	}
+	// decode response object
+	if err = decodeResponse(res, v); err != nil {
+		return newRequestError(err)
+	}
+	return nil
+}
+
 func (c *Client) Get(method string, v interface{}) error {
 	// do request
 	req, _ := http.NewRequest("GET", c.baseUrl+method, nil)
 	req.SetBasicAuth(c.login, c.password)
 
-	res, err := c.http.Do(req)
-	defer res.Body.Close()
-	if err != nil || res.StatusCode != http.StatusOK {
-		return &RequestError{"GET", method, res.Status, err}
-	}
-	if err = decodeResponse(res, v); err != nil {
-		return &RequestError{"GET", method, res.Status, err}
-	}
-	return err
+	return c.do(req, v)
 }
 
 func (c *Client) Post(method string, params url.Values, v interface{}) error {
@@ -161,15 +185,7 @@ func (c *Client) Post(method string, params url.Values, v interface{}) error {
 	req.SetBasicAuth(c.login, c.password)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	res, err := c.http.Do(req)
-	defer res.Body.Close()
-	if err != nil || res.StatusCode != http.StatusOK {
-		return &RequestError{"GET", method, res.Status, err}
-	}
-	if err = decodeResponse(res, v); err != nil {
-		return &RequestError{"GET", method, res.Status, err}
-	}
-	return err
+	return c.do(req, v)
 }
 
 var DefaultClient = &Client{http.DefaultClient, "https://robot-ws.your-server.de", "", ""}
